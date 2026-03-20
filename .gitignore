@@ -1,0 +1,27 @@
+## .NET / C#
+bin/
+obj/
+*.user
+*.suo
+*.cache
+*.dll
+*.exe
+*.pdb
+*.log
+
+## IDE
+.vs/
+.vscode/
+*.sln.docstates
+
+## OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+## Temp screenshots (keep screenshots/ folder)
+*.png
+!screenshots/*.png
+
+## Debug logs
+scope_debug.log
