@@ -23,14 +23,18 @@ A professional WPF (C#/.NET 9) application for controlling the Agilent/Keysight 
 ### Real-Time Oscilloscope Display
 - **Live waveform capture** using the 34410A's high-speed digitize mode
 - **5000 samples/second** at NPLC 0.006 with timer-based sampling (SAMP:SOUR TIM)
-- **50Hz/60Hz AC waveform display** with configurable number of cycles (1-20)
-- **Auto-amplitude scaling** with nice Y-axis divisions
+- **50Hz/60Hz AC waveform display** with configurable number of cycles (1-20, default 8)
+- **Auto-amplitude scaling** with nice Y-axis divisions and padding
 - **Auto time-base** with ms/div labels
-- **Phosphor green trace** with glow effect on dark scope background
+- **Adjustable time base slider** - zoom in/out on the waveform (drag left to zoom in)
+- **Trigger level slider** - adjustable trigger threshold with visual indicator line
+- **Measurement cursors** - two draggable cursors with delta-V, delta-T, and frequency readout
+- **Phosphor green trace** with triple-layer glow effect on dark scope background
 - **Zero-crossing frequency detection** for accurate Hz display
 - **Pk-Pk voltage** and **RMS** readout
 - **Graticule grid** with dot markers (classic oscilloscope look)
 - **Cycle trimming** - displays exact whole cycles for clean, stable waveform
+- **Screenshot button** - capture scope display to PNG file
 
 ### Intelligent Auto-Detection
 - **AUTO button** probes the input and automatically selects the correct measurement function
@@ -108,11 +112,15 @@ A professional WPF (C#/.NET 9) application for controlling the Agilent/Keysight 
 
 ### Oscilloscope Mode
 1. Connect an AC signal to the meter inputs
-2. Set the number of cycles to display (default: 3)
+2. Set the number of cycles to display (default: 8)
 3. Click **SCOPE** to start the live waveform display
 4. The meter enters high-speed digitize mode (5000 S/s, NPLC 0.006)
 5. Waveform updates continuously with frequency, RMS, and Pk-Pk readings
-6. Click **STOP** to return to normal meter operation
+6. Use the **T/div slider** to zoom the time base (drag left to zoom in)
+7. Adjust the **Trigger slider** to set the trigger level threshold
+8. Enable **Cursors** checkbox and drag the two cursor sliders to measure voltage and time differences
+9. Click the **camera icon** to save a screenshot of the scope display
+10. Click **STOP** to return to normal meter operation
 
 **Note:** During scope mode, the meter's front panel display is disabled to maximize acquisition speed and prevent beeping. The display restores automatically when you stop the scope.
 
@@ -144,12 +152,14 @@ The oscilloscope mode is completely safe for the 34410A. It uses standard SCPI c
 ```
 Agilent34410A/
   Agilent34410A.csproj    - Project file (.NET 9, WPF)
-  MainWindow.xaml          - UI layout (XAML)
-  MainWindow.xaml.cs       - Code-behind (all logic)
+  MainWindow.xaml          - UI layout (~660 lines XAML)
+  MainWindow.xaml.cs       - Code-behind (~2013 lines C#)
 screenshots/
   scope_50hz_sinewave.png  - Live 50Hz waveform capture
+  scope_50hz_sinewave2.png - Waveform capture (alternate view)
   main_interface.png       - Main application interface
 README.md                  - This file
+.gitignore                 - Git ignore rules
 ```
 
 ## Screenshots

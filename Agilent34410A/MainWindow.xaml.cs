@@ -7,6 +7,7 @@ using System.Text;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using System.Windows.Shapes;
 using System.Threading;
 using System.Windows.Threading;
@@ -233,6 +234,52 @@ public partial class MainWindow : Window
     private void BtnClearLog_Click(object sender, RoutedEventArgs e)
     {
         lstLog.Items.Clear();
+    }
+
+    private void BtnToggleLog_Click(object sender, RoutedEventArgs e)
+    {
+        logPanel.Visibility = logPanel.Visibility == Visibility.Visible
+            ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool SetProcessDPIAware();
+
+    private void BtnScopeScreenshot_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            SetProcessDPIAware();
+            var dlg = new SaveFileDialog
+            {
+                Filter = "PNG Image|*.png",
+                FileName = $"scope_{DateTime.Now:yyyyMMdd_HHmmss}.png"
+            };
+            if (dlg.ShowDialog() == true)
+            {
+                // Render the scope area to bitmap
+                var dpi = VisualTreeHelper.GetDpi(this);
+                // Navigate up: chartCanvas -> Grid -> Grid (scope) -> Border
+                var scopeGrid = VisualTreeHelper.GetParent(chartCanvas);
+                var outerGrid = VisualTreeHelper.GetParent(scopeGrid);
+                var scopeBorder = (FrameworkElement)VisualTreeHelper.GetParent(outerGrid);
+                var renderW = scopeBorder.ActualWidth * dpi.DpiScaleX;
+                var renderH = scopeBorder.ActualHeight * dpi.DpiScaleY;
+                var rtb = new System.Windows.Media.Imaging.RenderTargetBitmap(
+                    (int)renderW, (int)renderH, dpi.PixelsPerInchX, dpi.PixelsPerInchY,
+                    PixelFormats.Pbgra32);
+                rtb.Render(scopeBorder);
+                var encoder = new System.Windows.Media.Imaging.PngBitmapEncoder();
+                encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(rtb));
+                using var stream = File.Create(dlg.FileName);
+                encoder.Save(stream);
+                Log($"Screenshot saved: {dlg.FileName}");
+            }
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Screenshot error: {ex.Message}");
+        }
     }
 
     private void Write(string cmd)
@@ -1202,7 +1249,7 @@ public partial class MainWindow : Window
             {
                 var cycles = Dispatcher.Invoke(() =>
                 {
-                    if (int.TryParse(txtScopeCycles.Text, out var c) && c > 0 && c <= 20)
+                    if (int.TryParse(txtScopeCycles.Text, out var c) && c > 0 && c <= 50)
                         return c;
                     return 3;
                 });
@@ -1261,7 +1308,7 @@ public partial class MainWindow : Window
                         var rms = Math.Sqrt(samples.Select(s => s * s).Average());
                         var pk = samples.Max() - samples.Min();
 
-                        // Trim to exact whole cycles for clean display
+                        // Trim to whole cycles, then apply time base zoom
                         double[] displaySamples = samples;
                         if (freq > 10 && freq < 1000)
                         {
@@ -1276,11 +1323,27 @@ public partial class MainWindow : Window
 
                         Dispatcher.Invoke(() =>
                         {
+                            // Time base slider: 100 = show all, lower = zoom in
+                            var zoom = sldTimeBase.Value / 100.0;
+                            if (zoom < 0.05) zoom = 0.05;
+                            int showCount = (int)(displaySamples.Length * zoom);
+                            if (showCount < 20) showCount = 20;
+                            if (showCount > displaySamples.Length) showCount = displaySamples.Length;
+
+                            var zoomedSamples = displaySamples.Take(showCount).ToArray();
+                            double displayTimeMs = showCount / sampleRate * 1000;
+
+                            // Update time base label
+                            if (zoom >= 0.99)
+                                txtTimeBaseVal.Text = "Auto";
+                            else
+                                txtTimeBaseVal.Text = $"{displayTimeMs / 10:F1}ms";
+
                             txtValue.Text = FormatValue(rms);
                             txtUnit.Text = "V RMS";
                             txtFunction.Text = $"Scope - {freq:F1} Hz  ({sampleRate:F0} S/s)";
                             txtRateDisplay.Text = $"[Pk-Pk: {FormatValue(pk)}]";
-                            DrawScopeWaveform(displaySamples, sampleRate, freq);
+                            DrawScopeWaveform(zoomedSamples, sampleRate, freq);
                         });
                     }
                     catch (Exception ex)
@@ -1423,10 +1486,13 @@ public partial class MainWindow : Window
         var ampRange = maxVal - minVal;
         if (ampRange < 0.001) ampRange = 1;
 
-        // Nice Y-axis divisions
-        var divY = CalculateNiceDivision(ampRange, 8);
-        var yBottom = Math.Floor(minVal / divY) * divY;
-        var yTop = Math.Ceiling(maxVal / divY) * divY;
+        // Nice Y-axis divisions with generous padding (25%)
+        var divY = CalculateNiceDivision(ampRange, 6);
+        var center = (minVal + maxVal) / 2.0;
+        // Always add at least 1 extra division above and below the signal
+        var halfDivs = (int)Math.Ceiling(((maxVal - center) / divY)) + 1;
+        var yTop = center + halfDivs * divY;
+        var yBottom = center - halfDivs * divY;
         if (yTop <= yBottom) yTop = yBottom + divY;
         var fullYRange = yTop - yBottom;
 
@@ -1438,10 +1504,29 @@ public partial class MainWindow : Window
         if (numGridY < 2) numGridY = 4;
         if (numGridY > 12) numGridY = 8;
 
-        // Scope background colors
-        var gridBrush = new SolidColorBrush(Color.FromRgb(0x0a, 0x30, 0x20));
-        var centerBrush = new SolidColorBrush(Color.FromRgb(0x10, 0x40, 0x28));
-        var dotBrush = new SolidColorBrush(Color.FromRgb(0x14, 0x50, 0x30));
+        // Scope graticule colors
+        var gridBrush = new SolidColorBrush(Color.FromRgb(0x0c, 0x2a, 0x1e));
+        var centerBrush = new SolidColorBrush(Color.FromRgb(0x14, 0x4a, 0x30));
+        var dotBrush = new SolidColorBrush(Color.FromRgb(0x18, 0x55, 0x38));
+        var borderBrush = new SolidColorBrush(Color.FromRgb(0x0a, 0x3a, 0x28));
+
+        // Outer border ticks on all edges
+        for (int i = 0; i <= numGridX; i++)
+        {
+            var x = w * i / numGridX;
+            // Top tick
+            chartCanvas.Children.Add(new Line { X1 = x, Y1 = 0, X2 = x, Y2 = 4, Stroke = borderBrush, StrokeThickness = 1 });
+            // Bottom tick
+            chartCanvas.Children.Add(new Line { X1 = x, Y1 = h - 4, X2 = x, Y2 = h, Stroke = borderBrush, StrokeThickness = 1 });
+        }
+        for (int i = 0; i <= numGridY; i++)
+        {
+            var y = h * i / (double)numGridY;
+            // Left tick
+            chartCanvas.Children.Add(new Line { X1 = 0, Y1 = y, X2 = 4, Y2 = y, Stroke = borderBrush, StrokeThickness = 1 });
+            // Right tick
+            chartCanvas.Children.Add(new Line { X1 = w - 4, Y1 = y, X2 = w, Y2 = y, Stroke = borderBrush, StrokeThickness = 1 });
+        }
 
         // Horizontal grid lines + Y-axis labels
         for (int i = 0; i <= numGridY; i++)
@@ -1449,15 +1534,16 @@ public partial class MainWindow : Window
             var y = h - (h * i / (double)numGridY);
             var yVal = yBottom + (fullYRange * i / numGridY);
 
-            var isCenterish = Math.Abs(i - numGridY / 2.0) < 0.6;
+            var isCenter = Math.Abs(i - numGridY / 2.0) < 0.6;
             chartCanvas.Children.Add(new Line
             {
                 X1 = 0, Y1 = y, X2 = w, Y2 = y,
-                Stroke = isCenterish ? centerBrush : gridBrush,
-                StrokeThickness = isCenterish ? 1 : 0.5
+                Stroke = isCenter ? centerBrush : gridBrush,
+                StrokeThickness = isCenter ? 1.2 : 0.4,
+                StrokeDashArray = isCenter ? null : new DoubleCollection([2.0, 4.0])
             });
 
-            // Tick dots
+            // Graticule dots at intersections
             for (int d = 1; d < numGridX; d++)
             {
                 var dotX = w * d / numGridX;
@@ -1467,18 +1553,18 @@ public partial class MainWindow : Window
                 chartCanvas.Children.Add(tick);
             }
 
-            // Y label
+            // Y-axis label
             var label = new System.Windows.Controls.TextBlock
             {
                 Text = FormatAxisValue(yVal),
                 Foreground = new SolidColorBrush(Color.FromRgb(0x00, 0xe6, 0x76)),
                 FontFamily = new FontFamily("Consolas"),
-                FontSize = 9,
+                FontSize = 10,
                 TextAlignment = TextAlignment.Right,
                 Width = 54
             };
             Canvas.SetRight(label, 2);
-            Canvas.SetTop(label, y - 7);
+            Canvas.SetTop(label, y - 8);
             yAxisCanvas.Children.Add(label);
         }
 
@@ -1486,12 +1572,13 @@ public partial class MainWindow : Window
         for (int i = 0; i <= numGridX; i++)
         {
             var x = w * i / numGridX;
-            var isCenterish = Math.Abs(i - numGridX / 2.0) < 0.6;
+            var isCenter = Math.Abs(i - numGridX / 2.0) < 0.6;
             chartCanvas.Children.Add(new Line
             {
                 X1 = x, Y1 = 0, X2 = x, Y2 = h,
-                Stroke = isCenterish ? centerBrush : gridBrush,
-                StrokeThickness = isCenterish ? 1 : 0.5
+                Stroke = isCenter ? centerBrush : gridBrush,
+                StrokeThickness = isCenter ? 1.2 : 0.4,
+                StrokeDashArray = isCenter ? null : new DoubleCollection([2.0, 4.0])
             });
 
             for (int d = 1; d < numGridY; d++)
@@ -1514,62 +1601,156 @@ public partial class MainWindow : Window
                 Text = $"{tVal * 1000:F1}ms",
                 Foreground = new SolidColorBrush(Color.FromRgb(0x42, 0xa5, 0xf5)),
                 FontFamily = new FontFamily("Consolas"),
-                FontSize = 9,
+                FontSize = 10,
                 TextAlignment = TextAlignment.Center
             };
-            Canvas.SetLeft(label, xAxisW * i / numGridX - 18);
+            Canvas.SetLeft(label, xAxisW * i / numGridX - 20);
             Canvas.SetTop(label, 1);
             xAxisCanvas.Children.Add(label);
         }
 
-        // Draw zero line if visible
+        // Zero line (0V reference) - brighter dashed line
         var zeroY = h - ((0 - yBottom) / fullYRange * h);
-        if (zeroY > 0 && zeroY < h)
+        if (zeroY > 5 && zeroY < h - 5)
         {
             chartCanvas.Children.Add(new Line
             {
                 X1 = 0, Y1 = zeroY, X2 = w, Y2 = zeroY,
-                Stroke = new SolidColorBrush(Color.FromRgb(0x20, 0x50, 0x40)),
+                Stroke = new SolidColorBrush(Color.FromRgb(0x30, 0x70, 0x55)),
                 StrokeThickness = 1,
-                StrokeDashArray = new DoubleCollection([8.0, 4.0])
+                StrokeDashArray = new DoubleCollection([6.0, 3.0])
             });
+            // "0V" label on zero line
+            var zLabel = new System.Windows.Controls.TextBlock
+            {
+                Text = "0V",
+                Foreground = new SolidColorBrush(Color.FromArgb(0x80, 0x00, 0xe6, 0x76)),
+                FontFamily = new FontFamily("Consolas"),
+                FontSize = 8
+            };
+            Canvas.SetLeft(zLabel, 4);
+            Canvas.SetTop(zLabel, zeroY - 12);
+            chartCanvas.Children.Add(zLabel);
         }
 
-        // Draw waveform - phosphor green glow
-        var glow = new Polyline
+        // Waveform rendering - triple-layer phosphor glow effect
+        var outerGlow = new Polyline
         {
-            Stroke = new SolidColorBrush(Color.FromArgb(0x30, 0x00, 0xff, 0x88)),
+            Stroke = new SolidColorBrush(Color.FromArgb(0x10, 0x00, 0xff, 0x88)),
+            StrokeThickness = 10,
+            StrokeLineJoin = PenLineJoin.Round
+        };
+        var midGlow = new Polyline
+        {
+            Stroke = new SolidColorBrush(Color.FromArgb(0x28, 0x00, 0xff, 0x88)),
             StrokeThickness = 5,
             StrokeLineJoin = PenLineJoin.Round
         };
-
-        var polyline = new Polyline
+        var innerGlow = new Polyline
+        {
+            Stroke = new SolidColorBrush(Color.FromArgb(0x50, 0x40, 0xff, 0xa0)),
+            StrokeThickness = 3,
+            StrokeLineJoin = PenLineJoin.Round
+        };
+        var trace = new Polyline
         {
             Stroke = new SolidColorBrush(Color.FromRgb(0x00, 0xff, 0x88)),
-            StrokeThickness = 1.5,
+            StrokeThickness = 2,
             StrokeLineJoin = PenLineJoin.Round
         };
 
-        // Downsample if too many points for smooth rendering
+        // Build waveform points - downsample if too many
         var step = Math.Max(1, samples.Length / (int)w);
         for (int i = 0; i < samples.Length; i += step)
         {
             var x = (i / (double)(samples.Length - 1)) * w;
             var y = h - ((samples[i] - yBottom) / fullYRange * h);
-            y = Math.Max(0, Math.Min(h, y));
+            y = Math.Max(1, Math.Min(h - 1, y));
             var pt = new Point(x, y);
-            polyline.Points.Add(pt);
-            glow.Points.Add(pt);
+            outerGlow.Points.Add(pt);
+            midGlow.Points.Add(pt);
+            innerGlow.Points.Add(pt);
+            trace.Points.Add(pt);
         }
 
-        chartCanvas.Children.Add(glow);
-        chartCanvas.Children.Add(polyline);
+        chartCanvas.Children.Add(outerGlow);
+        chartCanvas.Children.Add(midGlow);
+        chartCanvas.Children.Add(innerGlow);
+        chartCanvas.Children.Add(trace);
+
+        // Trigger level line
+        var trigPct = sldTrigLevel.Value / 100.0;
+        var trigVal = yBottom + trigPct * fullYRange;
+        var trigY = h - ((trigVal - yBottom) / fullYRange * h);
+        if (trigY > 0 && trigY < h)
+        {
+            chartCanvas.Children.Add(new Line
+            {
+                X1 = 0, Y1 = trigY, X2 = w, Y2 = trigY,
+                Stroke = new SolidColorBrush(Color.FromRgb(0xff, 0x60, 0x20)),
+                StrokeThickness = 1,
+                StrokeDashArray = new DoubleCollection([4.0, 3.0])
+            });
+            // Trigger arrow on left edge
+            var trigLabel = new System.Windows.Controls.TextBlock
+            {
+                Text = $"T {FormatAxisValue(trigVal)}V",
+                Foreground = new SolidColorBrush(Color.FromRgb(0xff, 0x60, 0x20)),
+                FontFamily = new FontFamily("Consolas"),
+                FontSize = 8
+            };
+            Canvas.SetLeft(trigLabel, 4);
+            Canvas.SetTop(trigLabel, trigY + 2);
+            chartCanvas.Children.Add(trigLabel);
+        }
+
+        // Cursors
+        if (chkCursors.IsChecked == true)
+        {
+            var c1Pct = sldCursor1.Value / 100.0;
+            var c2Pct = sldCursor2.Value / 100.0;
+            var c1X = c1Pct * w;
+            var c2X = c2Pct * w;
+
+            // Cursor 1 - yellow
+            chartCanvas.Children.Add(new Line
+            {
+                X1 = c1X, Y1 = 0, X2 = c1X, Y2 = h,
+                Stroke = new SolidColorBrush(Color.FromRgb(0xff, 0xd5, 0x40)),
+                StrokeThickness = 1,
+                StrokeDashArray = new DoubleCollection([3.0, 2.0])
+            });
+            // Cursor 2 - cyan
+            chartCanvas.Children.Add(new Line
+            {
+                X1 = c2X, Y1 = 0, X2 = c2X, Y2 = h,
+                Stroke = new SolidColorBrush(Color.FromRgb(0x40, 0xe0, 0xff)),
+                StrokeThickness = 1,
+                StrokeDashArray = new DoubleCollection([3.0, 2.0])
+            });
+
+            // Calculate cursor measurements
+            int c1Idx = (int)(c1Pct * (samples.Length - 1));
+            int c2Idx = (int)(c2Pct * (samples.Length - 1));
+            c1Idx = Math.Clamp(c1Idx, 0, samples.Length - 1);
+            c2Idx = Math.Clamp(c2Idx, 0, samples.Length - 1);
+            double c1V = samples[c1Idx];
+            double c2V = samples[c2Idx];
+            double dt = Math.Abs(c2Idx - c1Idx) / sampleRate * 1000; // ms
+            double dv = c2V - c1V;
+
+            txtCursorInfo.Text = $"\u0394t={dt:F1}ms \u0394V={dv:F1}V";
+        }
+        else
+        {
+            txtCursorInfo.Text = "";
+        }
 
         // Scope header info
         txtScopeFunc.Text = $"{frequency:F1} Hz";
-        txtScopeAmpl.Text = $"Y: {FormatAxisValue(divY)}V/div";
-        txtScopeTime.Text = $"X: {totalTime * 1000 / numGridX:F1}ms/div";
-        txtScopePoints.Text = $"[{samples.Length} pts]";
+        txtScopeAmpl.Text = $"{FormatAxisValue(divY)}V/div";
+        txtScopeTime.Text = $"{totalTime * 1000 / numGridX:F1}ms/div";
+        txtScopePoints.Text = $"{samples.Length} pts | {sampleRate:F0} S/s";
     }
 
     private void BtnStream_Click(object sender, RoutedEventArgs e)
